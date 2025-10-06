@@ -1,0 +1,5 @@
+# Pin UI + XML libs once selected. Examples:
+# PySide6==6.7.0
+# openpyxl==3.1.4
+# lxml==5.2.1
+
