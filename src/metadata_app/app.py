@@ -1,25 +1,21 @@
-"""Application entry point and high-level wiring."""
+"""Application entry points."""
 
-from metadata_app.ui.screens.home_screen import HomeScreen
-from metadata_app.services.xml_service import XmlService
-from metadata_app.services.search_service import SearchService
-from metadata_app.services.export_service import ExportService
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+SRC_DIR = Path(__file__).resolve().parent.parent
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from metadata_app.ui.streamlit_app import main as streamlit_main
 
 
 def run_app() -> None:
-    """Bootstrap services and launch the home screen."""
-    xml_service = XmlService()
-    search_service = SearchService(xml_service=xml_service)
-    export_service = ExportService(xml_service=xml_service)
-
-    home_screen = HomeScreen(
-        xml_service=xml_service,
-        search_service=search_service,
-        export_service=export_service,
-    )
-    home_screen.show()
+    """Launch the Streamlit interface."""
+    streamlit_main()
 
 
 if __name__ == "__main__":
     run_app()
-

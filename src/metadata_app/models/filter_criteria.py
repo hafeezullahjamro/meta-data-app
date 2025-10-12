@@ -9,6 +9,11 @@ from dataclasses import dataclass
 class FilterCriteria:
     """Represents a single metadata field filter."""
 
+    section: str
     field: str
     keyword: str
 
+    @property
+    def key(self) -> str:
+        """Return a composite key used for flattened field lookup."""
+        return f"{self.section}:{self.field}"

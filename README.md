@@ -1,6 +1,6 @@
 # Metadata Management App
 
-This repository scaffolds a desktop application that helps archivists capture, search, and export media metadata (audio, video, image).
+This repository scaffolds a Streamlit-based desktop/web application that helps archivists capture, search, and export media metadata (audio, video, image).
 
 ## Project Layout
 
@@ -16,14 +16,22 @@ This repository scaffolds a desktop application that helps archivists capture, s
 
 ## Getting Started
 
-1. Create a virtual environment and install dependencies once they are defined in `requirements.txt`.
-2. Use `src/metadata_app/app.py` as the entry point for the UI shell.
-3. Fill out services and UI screens according to the functional guide provided by the product brief.
+1. Create a virtual environment and install dependencies.
+   ```bash
+   python -m venv .venv
+   .venv\Scripts\activate  # Windows
+   pip install -r requirements.txt
+   ```
+2. Launch the Streamlit UI.
+   ```bash
+   streamlit run src/main.py
+   ```
+3. Use the sidebar to navigate between Home, Metadata Form, Search, and Export.
+
+All XML files are stored by default under `data/metadata_store`.
 
 ## Next Steps
 
-- Implement the UI using your preferred toolkit (e.g., PySide6, Tkinter, Electron).
-- Flesh out XML read/write logic in `services/xml_service.py`.
-- Add search indexing in `services/search_service.py`.
-- Implement Excel export via `services/export_service.py` (e.g., using `openpyxl`).
-
+- Extend the metadata schema in `metadata_app/config/schema.py` with additional sections/fields.
+- Implement validation rules (required fields, controlled vocabularies).
+- Add automated tests covering XML serialization, search filters, and Excel export formatting.

@@ -1,0 +1,4 @@
+# Ignore uploaded media files.
+*
+!.gitignore
+

@@ -22,6 +22,11 @@ class MetadataRepository:
         """Build a file path for a record based on title and media type."""
         safe_title = "".join(ch for ch in title if ch.isalnum() or ch in (" ", "-", "_")).strip()
         safe_title = safe_title.replace(" ", "_") or "untitled"
-        filename = f"{media_type.lower()}_{safe_title}.xml"
-        return self._base_dir / filename
+        base_filename = f"{media_type.lower()}_{safe_title}".lower()
 
+        candidate = self._base_dir / f"{base_filename}.xml"
+        suffix = 1
+        while candidate.exists():
+            candidate = self._base_dir / f"{base_filename}_{suffix}.xml"
+            suffix += 1
+        return candidate

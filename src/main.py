@@ -1,8 +1,7 @@
-"""Convenience launcher for the metadata app."""
+"""Streamlit launcher for the metadata management app."""
 
-from metadata_app import run_app
+from metadata_app.ui.streamlit_app import main
 
 
 if __name__ == "__main__":
-    run_app()
-
+    main()

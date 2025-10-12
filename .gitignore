@@ -16,6 +16,10 @@ venv/
 # IDE
 .vscode/
 .idea/
+.streamlit/
+src/data/
+src/metadata_app/data/
+src/metadata_app/streamlit
 
 # OS
 Thumbs.db
@@ -26,3 +30,5 @@ build/
 dist/
 *.egg-info/
 
+# App output
+exports/
