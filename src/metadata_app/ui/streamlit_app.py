@@ -24,11 +24,9 @@ SCREEN_ORDER = ["home", "form", "search", "export", "exit"]
 TITLE_FIELD_KEY = "field::Administrative::Title"
 LONG_TEXT_FIELDS = {"Description", "Production Notes", "Usage Notes"}
 MEDIA_PATH_KEY = "current_media_path"
-UPLOAD_DEST_KEY = "upload_destination"
-MEDIA_UPLOAD_TOKEN_KEY = "media_upload_token"
 MEDIA_PATH_INPUT_KEY = "media_path_input"
 MEDIA_PATH_INPUT_PENDING_KEY = "media_path_input_pending"
-UPLOAD_DEST_PENDING_KEY = "upload_destination_pending"
+MEDIA_UPLOAD_TOKEN_KEY = "media_upload_token"
 FLASH_MESSAGE_KEY = "flash_message"
 FORM_SEED_TOKEN_KEY = "form_seed_token"
 FORM_RENDER_TOKEN_KEY = "form_render_token"
@@ -149,6 +147,16 @@ def load_media_from_disk(media_path: Path, xml_service: XmlService) -> None:
     load_record_into_session(record, metadata_path)
 
 
+def save_uploaded_media_file(uploaded_file, media_type: str) -> Path:
+    """Persist an uploaded media file to the default upload directory."""
+    target_dir = default_upload_directory(media_type)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    filename = Path(uploaded_file.name).name
+    dest_path = target_dir / filename
+    dest_path.write_bytes(uploaded_file.getbuffer())
+    return dest_path
+
+
 def handle_media_path_entry(path_str: str, xml_service: XmlService) -> None:
     """Parse user-supplied media path and load metadata."""
     path_str = path_str.strip()
@@ -156,6 +164,7 @@ def handle_media_path_entry(path_str: str, xml_service: XmlService) -> None:
         st.warning("Please enter a media file path before loading.")
         return
     path = Path(path_str).expanduser()
+    st.session_state[MEDIA_UPLOAD_TOKEN_KEY] = None
     load_media_from_disk(path, xml_service)
 
 
@@ -190,12 +199,6 @@ def initialize_session_state(xml_service: XmlService) -> None:
         st.session_state[MEDIA_PATH_INPUT_KEY] = st.session_state[MEDIA_PATH_KEY]
     if MEDIA_PATH_INPUT_PENDING_KEY not in st.session_state:
         st.session_state[MEDIA_PATH_INPUT_PENDING_KEY] = None
-    if UPLOAD_DEST_KEY not in st.session_state:
-        upload_dir = default_upload_directory(st.session_state["media_type"])
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        st.session_state[UPLOAD_DEST_KEY] = str(upload_dir)
-    if UPLOAD_DEST_PENDING_KEY not in st.session_state:
-        st.session_state[UPLOAD_DEST_PENDING_KEY] = None
     if MEDIA_UPLOAD_TOKEN_KEY not in st.session_state:
         st.session_state[MEDIA_UPLOAD_TOKEN_KEY] = None
     if FLASH_MESSAGE_KEY not in st.session_state:
@@ -251,14 +254,11 @@ def load_record_into_session(record: MetadataRecord, path: Path | None = None) -
     st.session_state["current_record"] = record
     st.session_state["media_type"] = record.media_type
     st.session_state["current_xml_path"] = str(path) if path else None
+    st.session_state["current_screen"] = "form"
     media_path_value = (record.media_path or "").strip()
     st.session_state[MEDIA_PATH_KEY] = media_path_value
     st.session_state[MEDIA_PATH_INPUT_PENDING_KEY] = media_path_value
 
-    upload_dir = default_upload_directory(record.media_type)
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    st.session_state[UPLOAD_DEST_PENDING_KEY] = str(upload_dir)
-    st.session_state[MEDIA_UPLOAD_TOKEN_KEY] = None
     st.session_state[FORM_SEED_TOKEN_KEY] += 1
 
     trigger_rerun()
@@ -365,97 +365,105 @@ def render_metadata_form(xml_service: XmlService) -> None:
     pending_media_input = st.session_state.get(MEDIA_PATH_INPUT_PENDING_KEY)
     if pending_media_input is not None:
         st.session_state[MEDIA_PATH_INPUT_KEY] = pending_media_input
+        st.session_state[MEDIA_PATH_KEY] = pending_media_input
         st.session_state[MEDIA_PATH_INPUT_PENDING_KEY] = None
-    pending_upload_dest = st.session_state.get(UPLOAD_DEST_PENDING_KEY)
-    if pending_upload_dest is not None:
-        st.session_state[UPLOAD_DEST_KEY] = pending_upload_dest
-        st.session_state[UPLOAD_DEST_PENDING_KEY] = None
+
     media_cols = st.columns([3, 1])
     with media_cols[0]:
-        st.text_input(
+        media_path_input = st.text_input(
             "Media File Path",
             key=MEDIA_PATH_INPUT_KEY,
-            placeholder=f"Select or upload a {st.session_state['media_type'].lower()} file",
+            placeholder=f"Enter or paste a {st.session_state['media_type'].lower()} file path",
         )
-        st.session_state[MEDIA_PATH_KEY] = st.session_state.get(MEDIA_PATH_INPUT_KEY, "").strip()
     with media_cols[1]:
-        if st.button("Load Media", use_container_width=True):
-            handle_media_path_entry(st.session_state.get(MEDIA_PATH_KEY, ""), xml_service)
-
-    st.text_input(
-        "Upload Destination Folder",
-        key=UPLOAD_DEST_KEY,
-        help="Uploaded files will be stored in this folder. Adjust if you want to save elsewhere.",
-    )
+        load_clicked = st.button("Load Media", use_container_width=True)
+    if load_clicked:
+        handle_media_path_entry(media_path_input, xml_service)
 
     uploaded_file = st.file_uploader(
         f"Upload {st.session_state['media_type']} File",
         type=media_upload_extensions(st.session_state["media_type"]),
-        key=f"uploader_{st.session_state['media_type'].lower()}",
+        key="media_uploader",
     )
     if uploaded_file is not None:
-        dest_folder = Path(st.session_state.get(UPLOAD_DEST_KEY, "")).expanduser()
-        try:
-            dest_folder.mkdir(parents=True, exist_ok=True)
-        except Exception as exc:
-            st.error(f"Unable to create destination folder: {exc}")
-        else:
-            dest_path = dest_folder / uploaded_file.name
-            buffer = uploaded_file.getbuffer()
-            token = (uploaded_file.name, len(buffer), str(dest_path))
-            if st.session_state.get(MEDIA_UPLOAD_TOKEN_KEY) != token:
-                try:
-                    with open(dest_path, "wb") as file_handle:
-                        file_handle.write(buffer)
-                except Exception as exc:
-                    st.error(f"Failed to save uploaded file: {exc}")
-                else:
-                    st.session_state[MEDIA_UPLOAD_TOKEN_KEY] = token
-                    load_media_from_disk(dest_path, xml_service)
-            else:
-                st.session_state[MEDIA_UPLOAD_TOKEN_KEY] = token
+        upload_token = (uploaded_file.name, uploaded_file.size)
+        if st.session_state.get(MEDIA_UPLOAD_TOKEN_KEY) != upload_token:
+            dest_path = save_uploaded_media_file(uploaded_file, st.session_state["media_type"])
+            st.session_state[MEDIA_UPLOAD_TOKEN_KEY] = upload_token
+            load_media_from_disk(dest_path, xml_service)
 
-    st.text_input("Title", key=TITLE_FIELD_KEY, help="Used as the filename when exporting to XML.")
+
     st.markdown("### Metadata Fields")
+    with st.form("metadata_form"):
+        st.text_input("Title", key=TITLE_FIELD_KEY, help="Used as the filename when exporting to XML.")
 
-    for section in record.sections:
-        with st.expander(f"{section.name}", expanded=section.name in {"Administrative", "Technical"}):
-            for field_name in section.fields:
-                if section.name == "Administrative" and field_name == "Title":
-                    continue
-                key = field_key(section.name, field_name)
-                label = f"{field_name}"
-                if is_date_field(field_name):
-                    no_date_key = f"{key}__no_date"
-                    date_key = f"{key}__date_picker"
-                    current_value = st.session_state.get(key, "").strip()
-                    if no_date_key not in st.session_state:
-                        st.session_state[no_date_key] = current_value == ""
-                    no_date = st.checkbox(f"No {label}", key=no_date_key)
-                    if no_date:
-                        st.session_state[key] = ""
-                        st.session_state.pop(date_key, None)
-                        st.caption("No date stored for this field.")
+        for section in record.sections:
+            with st.expander(f"{section.name}", expanded=section.name in {"Administrative", "Technical"}):
+                for field_name in section.fields:
+                    if section.name == "Administrative" and field_name == "Title":
+                        continue
+                    key = field_key(section.name, field_name)
+                    label = f"{field_name}"
+                    if is_date_field(field_name):
+                        no_date_key = f"{key}__no_date"
+                        date_key = f"{key}__date_picker"
+                        current_value = st.session_state.get(key, "").strip()
+                        if no_date_key not in st.session_state:
+                            st.session_state[no_date_key] = current_value == ""
+                        no_date = st.checkbox(f"No {label}", key=no_date_key)
+                        if no_date:
+                            st.session_state[key] = ""
+                            st.session_state.pop(date_key, None)
+                            st.caption("No date stored for this field.")
+                        else:
+                            default_date = parse_iso_date(current_value) or datetime.date.today()
+                            if date_key not in st.session_state:
+                                st.session_state[date_key] = default_date
+                            selected_date = st.date_input(label, key=date_key)
+                            if isinstance(selected_date, datetime.date):
+                                st.session_state[key] = selected_date.isoformat()
+                    elif field_name in LONG_TEXT_FIELDS:
+                        st.text_area(label, key=key, height=120)
                     else:
-                        default_date = parse_iso_date(current_value) or datetime.date.today()
-                        if date_key not in st.session_state:
-                            st.session_state[date_key] = default_date
-                        selected_date = st.date_input(label, key=date_key)
-                        if isinstance(selected_date, datetime.date):
-                            st.session_state[key] = selected_date.isoformat()
-                elif field_name in LONG_TEXT_FIELDS:
-                    st.text_area(label, key=key, height=120)
-                else:
-                    st.text_input(label, key=key)
+                        st.text_input(label, key=key)
 
-    col1, col2, col3, col4 = st.columns(4)
-    if col1.button("Create XML", type="primary", use_container_width=True):
+        form_save_col, form_clear_col = st.columns(2)
+        save_clicked = form_save_col.form_submit_button("Save Metadata", type="primary")
+        clear_clicked = form_clear_col.form_submit_button("Reset Form")
+
+    if save_clicked:
         handle_create_xml(xml_service)
-    if col2.button("Clear", use_container_width=True):
+    if clear_clicked:
         handle_clear_form()
-    if col3.button("Back to Home", use_container_width=True):
+
+    action_cols = st.columns(3)
+    if action_cols[0].button("Back to Home", use_container_width=True):
         st.session_state["current_screen"] = "home"
         trigger_rerun()
+
+    current_xml_path = st.session_state.get("current_xml_path")
+    if current_xml_path:
+        xml_path = Path(current_xml_path)
+        if xml_path.exists():
+            with open(xml_path, "rb") as xml_handle:
+                action_cols[1].download_button(
+                    "Download Metadata XML",
+                    data=xml_handle.read(),
+                    file_name=xml_path.name,
+                    mime="application/xml",
+                    use_container_width=True,
+                )
+    media_path_value = st.session_state.get(MEDIA_PATH_KEY, "")
+    if media_path_value:
+        media_path = Path(media_path_value)
+        if media_path.exists():
+            with open(media_path, "rb") as media_handle:
+                action_cols[2].download_button(
+                    "Download Media",
+                    data=media_handle.read(),
+                    file_name=media_path.name,
+                    use_container_width=True,
+                )
 
     with st.expander("Load Existing XML"):
         xml_files = sorted(xml_service.repository.base_dir.glob("*.xml"))
@@ -525,6 +533,7 @@ def handle_clear_form() -> None:
     """Reset the metadata form to blank values."""
     media_type = st.session_state["media_type"]
     push_flash("Form cleared. Start fresh!", "info")
+    st.session_state[MEDIA_UPLOAD_TOKEN_KEY] = None
     load_record_into_session(create_empty_record(media_type))
 
 
@@ -534,6 +543,12 @@ def render_search_screen(search_service: SearchService, xml_service: XmlService)
 
     folder = st.text_input("Choose Folder", value=st.session_state["search_folder"])
     st.session_state["search_folder"] = folder
+
+    text_query = st.text_input(
+        "Keyword (matches any field)",
+        value=st.session_state.get("search_text_query", ""),
+        key="search_text_query",
+    )
 
     filter_count = st.number_input(
         "Number of filters",
@@ -576,7 +591,7 @@ def render_search_screen(search_service: SearchService, xml_service: XmlService)
 
     col1, col2, col3 = st.columns(3)
     if col1.button("Search", type="primary", use_container_width=True):
-        execute_search(search_service, folder, filters, match_all)
+        execute_search(search_service, folder, filters, match_all, text_query)
     if col2.button("Clear Search", use_container_width=True):
         st.session_state["search_results"] = []
         st.success("Search cleared.")
@@ -596,11 +611,12 @@ def execute_search(
     folder: str,
     filters: Iterable[FilterCriteria],
     match_all: bool,
+    text_query: str,
 ) -> None:
     """Execute a search and cache the results."""
     path = Path(folder).expanduser()
     try:
-        results = search_service.search(path, list(filters), match_all)
+        results = search_service.search(path, list(filters), match_all, text_query)
     except Exception as exc:
         st.error(f"Search failed: {exc}")
         return

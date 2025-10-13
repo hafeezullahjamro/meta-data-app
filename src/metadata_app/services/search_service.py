@@ -21,6 +21,7 @@ class SearchService:
         folder: Path,
         filters: list[FilterCriteria],
         match_all: bool,
+        text_query: str | None = None,
     ) -> List[Tuple[Path, MetadataRecord]]:
         """Return metadata records that match provided filters."""
         folder = Path(folder)
@@ -30,24 +31,42 @@ class SearchService:
         matched: List[Tuple[Path, MetadataRecord]] = []
 
         candidates = sorted(folder.glob("*.xml"))
+        text_query_normalized = (text_query or "").strip().lower()
+
         for xml_file in candidates:
             try:
                 record = self._xml_service.load_record(xml_file)
             except Exception:
                 continue
 
-            if not filters:
-                matched.append((xml_file, record))
+            flattened = record.flatten()
+
+            # Evaluate field-specific filters first (if any were supplied).
+            filters_match = True
+            if filters:
+                evaluations = []
+                for criteria in filters:
+                    value = flattened.get(criteria.key, "")
+                    keyword = criteria.keyword.strip().lower()
+                    evaluations.append(keyword in value.lower())
+
+                filters_match = (match_all and all(evaluations)) or (not match_all and any(evaluations))
+
+            if not filters_match:
                 continue
 
-            flattened = record.flatten()
-            evaluations = []
-            for criteria in filters:
-                value = flattened.get(criteria.key, "")
-                keyword = criteria.keyword.strip().lower()
-                evaluations.append(keyword in value.lower())
+            # When a free-text query is provided, match it against every value in the record.
+            if text_query_normalized:
+                aggregated_values = [
+                    record.title or "",
+                    record.media_type or "",
+                    xml_file.stem,
+                    xml_file.name,
+                ]
+                aggregated_values.extend(flattened.values())
+                if not any(text_query_normalized in (value or "").lower() for value in aggregated_values):
+                    continue
 
-            if (match_all and all(evaluations)) or (not match_all and any(evaluations)):
-                matched.append((xml_file, record))
+            matched.append((xml_file, record))
 
         return matched
