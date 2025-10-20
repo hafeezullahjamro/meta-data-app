@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional
 
-from metadata_app.config.schema import get_default_sections
+from metadata_app.config import get_default_sections
 
 
 @dataclass(slots=True)
@@ -66,7 +66,7 @@ class MetadataRecord:
 def create_empty_record(media_type: str) -> MetadataRecord:
     """Return a new metadata record with empty fields based on the default schema."""
     sections = []
-    for definition in get_default_sections():
+    for definition in get_default_sections(media_type):
         fields = {field_name: "" for field_name in definition.fields}
         sections.append(
             MetadataSection(

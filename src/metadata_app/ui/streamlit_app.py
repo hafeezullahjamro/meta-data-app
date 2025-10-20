@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import datetime
 import tempfile
+from itertools import zip_longest
 from pathlib import Path
 from typing import Iterable, List, Tuple
 
 import pandas as pd
 import streamlit as st
 
-from metadata_app.config import DEFAULT_SECTIONS
+from metadata_app.config import get_all_section_field_pairs, get_default_sections
 from metadata_app.models import FilterCriteria, MetadataRecord, MetadataSection, create_empty_record
 from metadata_app.services import ExportService, SearchService, XmlService
 
@@ -20,9 +21,135 @@ MEDIA_EXTENSIONS = {
     "Audio": ["mp3", "wav", "aac", "flac", "m4a"],
     "Image": ["jpg", "jpeg", "png", "tif", "tiff", "bmp"],
 }
+GENRE_OPTIONS = [
+    "Documentary",
+    "News report",
+    "Interview",
+    "Oral history",
+    "Lecture",
+    "Advertisement / Commercial",
+    "Feature film",
+    "Educational program",
+    "Home video",
+    "Music",
+    "Sports broadcast",
+    "Public service announcement",
+]
+LANGUAGE_OPTIONS = ["Arabic", "English"]
+QC_STATUS_OPTIONS = ["PASS", "FAILD"]
+SIGNAL_TYPE_OPTIONS = ["Analog", "Digital"]
+FORMAT_LEVEL_OPTIONS = ["Consumer", "Professional"]
+CONSUMER_FORMAT_OPTIONS = [
+    "VHS",
+    "VHSC",
+    "8mm",
+    "HI8",
+    "D8",
+    "MiniDV",
+    "MicroMV",
+    "Betamax",
+]
+PROFESSIONAL_FORMAT_OPTIONS = [
+    "Umatic Low",
+    "Umatic HI",
+    "Betacam SP",
+    "Digicam",
+    "Betacam IMX",
+    "Betacam MPEG",
+    "DVCAM",
+    "HDCAM",
+    "XDCAM",
+]
+PHOTO_FORMAT_OPTIONS = ["Printed Photo", "Negative", "Slide"]
+RESOLUTION_OPTIONS = ["576i", "480p"]
+FRAME_RATE_OPTIONS = ["25", "29.92"]
+ASPECT_RATIO_OPTIONS = ["4:3", "16:9"]
+
+STATIC_SELECT_OPTIONS = {
+    ("Administrative", "QC Status"): QC_STATUS_OPTIONS,
+    ("Descriptive", "Genre"): GENRE_OPTIONS,
+    ("Descriptive", "Language"): LANGUAGE_OPTIONS,
+    ("Technical Original", "Signal Type"): SIGNAL_TYPE_OPTIONS,
+    ("Technical Original", "Format Level"): FORMAT_LEVEL_OPTIONS,
+    ("Technical Master", "Resolution"): RESOLUTION_OPTIONS,
+    ("Technical Master", "Frame Rate"): FRAME_RATE_OPTIONS,
+    ("Technical Master", "Aspect Ratio"): ASPECT_RATIO_OPTIONS,
+    ("Access Copy", "Resolution"): RESOLUTION_OPTIONS,
+}
+
+
+def get_select_options(section_name: str, field_name: str, media_type: str) -> list[str] | None:
+    """Return select options for the given field if applicable."""
+    key = (section_name, field_name)
+    media_type_lower = media_type.lower()
+    if key in STATIC_SELECT_OPTIONS:
+        return STATIC_SELECT_OPTIONS[key]
+    if section_name == "Technical Original" and field_name == "Format":
+        if media_type_lower == "image":
+            return PHOTO_FORMAT_OPTIONS
+        format_level = st.session_state.get(field_key(section_name, "Format Level"), "").lower()
+        if format_level == "consumer":
+            return CONSUMER_FORMAT_OPTIONS
+        if format_level == "professional":
+            return PROFESSIONAL_FORMAT_OPTIONS
+        return CONSUMER_FORMAT_OPTIONS + PROFESSIONAL_FORMAT_OPTIONS
+    if section_name == "Technical Original" and field_name == "Format Level" and media_type_lower == "image":
+        return ["Consumer", "Professional"]
+    if section_name == "Descriptive" and field_name == "Language":
+        return LANGUAGE_OPTIONS
+    return None
+
+
+def render_field_input(section_name: str, field_name: str, media_type: str, container) -> None:
+    """Render a form input for the given field using the supplied container."""
+    key = field_key(section_name, field_name)
+    current_value = st.session_state.get(key, "")
+
+    if is_date_field(field_name):
+        no_date_key = f"{key}__no_date"
+        date_key = f"{key}__date_picker"
+        if no_date_key not in st.session_state:
+            st.session_state[no_date_key] = current_value.strip() == ""
+        no_date = container.checkbox(f"No {field_name}", key=no_date_key)
+        if no_date:
+            st.session_state[key] = ""
+            st.session_state.pop(date_key, None)
+            container.caption("No date stored for this field.")
+        else:
+            default_date = parse_iso_date(current_value) or datetime.date.today()
+            if date_key not in st.session_state:
+                st.session_state[date_key] = default_date
+            selected_date = container.date_input(field_name, key=date_key)
+            if isinstance(selected_date, datetime.date):
+                st.session_state[key] = selected_date.isoformat()
+        return
+
+    if field_name in LONG_TEXT_FIELDS:
+        container.text_area(field_name, key=key, height=120)
+        return
+
+    options = get_select_options(section_name, field_name, media_type)
+    if options:
+        option_list = [""] + options
+        index = option_list.index(current_value) if current_value in option_list else 0
+        container.selectbox(field_name, option_list, index=index, key=key)
+        return
+
+    container.text_input(field_name, key=key)
+
 SCREEN_ORDER = ["home", "form", "search", "export", "exit"]
 TITLE_FIELD_KEY = "field::Administrative::Title"
-LONG_TEXT_FIELDS = {"Description", "Production Notes", "Usage Notes"}
+LONG_TEXT_FIELDS = {
+    "Description",
+    "QC Report",
+    "Format Notes",
+    "Condition Note",
+    "Capture Notes",
+    "Error Reports",
+    "Backup Details",
+    "Production Notes",
+    "Usage Notes",
+}
 MEDIA_PATH_KEY = "current_media_path"
 MEDIA_PATH_INPUT_KEY = "media_path_input"
 MEDIA_PATH_INPUT_PENDING_KEY = "media_path_input_pending"
@@ -63,7 +190,7 @@ def ensure_default_fields(record: MetadataRecord) -> MetadataRecord:
     section_map = {section.name: section for section in record.sections}
     normalized_sections: List[MetadataSection] = []
 
-    for definition in DEFAULT_SECTIONS:
+    for definition in get_default_sections(record.media_type):
         existing = section_map.get(definition.name)
         if existing:
             for field in definition.fields:
@@ -219,6 +346,8 @@ def initialize_session_state(xml_service: XmlService) -> None:
         st.session_state["filter_count"] = 1
     if "search_folder" not in st.session_state:
         st.session_state["search_folder"] = str(xml_service.repository.base_dir)
+    if "search_text_query" not in st.session_state:
+        st.session_state["search_text_query"] = ""
     if "export_destination" not in st.session_state:
         st.session_state["export_destination"] = str(Path("exports/metadata_export.xlsx"))
 
@@ -258,6 +387,7 @@ def load_record_into_session(record: MetadataRecord, path: Path | None = None) -
     media_path_value = (record.media_path or "").strip()
     st.session_state[MEDIA_PATH_KEY] = media_path_value
     st.session_state[MEDIA_PATH_INPUT_PENDING_KEY] = media_path_value
+    st.session_state[MEDIA_UPLOAD_TOKEN_KEY] = None
 
     st.session_state[FORM_SEED_TOKEN_KEY] += 1
 
@@ -328,27 +458,36 @@ def render_sidebar() -> None:
             trigger_rerun()
 
 
+
+
+
 def render_home_screen() -> None:
     """Display the home screen for choosing a media type."""
     st.title("Select Media Type")
     st.write("Choose the type of media for which you would like to create metadata.")
 
-    columns = st.columns(len(MEDIA_TYPES))
+    cols = st.columns(len(MEDIA_TYPES))
     for idx, media_type in enumerate(MEDIA_TYPES):
-        if columns[idx].button(media_type, use_container_width=True):
-            st.session_state["current_screen"] = "form"
+        if cols[idx].button(media_type, use_container_width=True):
+            st.session_state[MEDIA_UPLOAD_TOKEN_KEY] = None
             load_record_into_session(create_empty_record(media_type))
+            st.session_state["current_screen"] = "form"
+            trigger_rerun()
+
+    st.caption(
+        "After selecting a media type, continue to the Metadata Form to load or upload files and edit metadata."
+    )
 
 
 def render_metadata_form(xml_service: XmlService) -> None:
     """Render the metadata form screen."""
     record = ensure_default_fields(st.session_state["current_record"])
     st.session_state["current_record"] = record
-    seed_token = st.session_state.get(FORM_SEED_TOKEN_KEY, 0)
-    last_render_seed = st.session_state.get(FORM_RENDER_TOKEN_KEY, -1)
-    overwrite = seed_token != last_render_seed
-    initialize_field_values(record, overwrite=overwrite)
-    st.session_state[FORM_RENDER_TOKEN_KEY] = seed_token
+
+    pending_media_input = st.session_state.pop(MEDIA_PATH_INPUT_PENDING_KEY, None)
+    if pending_media_input is not None:
+        st.session_state[MEDIA_PATH_INPUT_KEY] = pending_media_input
+        st.session_state[MEDIA_PATH_KEY] = pending_media_input
 
     st.title("Metadata Form")
     st.subheader(f"Media Type: {st.session_state['media_type']}")
@@ -362,12 +501,6 @@ def render_metadata_form(xml_service: XmlService) -> None:
     pop_flash()
 
     st.markdown("### Media File")
-    pending_media_input = st.session_state.get(MEDIA_PATH_INPUT_PENDING_KEY)
-    if pending_media_input is not None:
-        st.session_state[MEDIA_PATH_INPUT_KEY] = pending_media_input
-        st.session_state[MEDIA_PATH_KEY] = pending_media_input
-        st.session_state[MEDIA_PATH_INPUT_PENDING_KEY] = None
-
     media_cols = st.columns([3, 1])
     with media_cols[0]:
         media_path_input = st.text_input(
@@ -392,40 +525,34 @@ def render_metadata_form(xml_service: XmlService) -> None:
             st.session_state[MEDIA_UPLOAD_TOKEN_KEY] = upload_token
             load_media_from_disk(dest_path, xml_service)
 
-
     st.markdown("### Metadata Fields")
     with st.form("metadata_form"):
         st.text_input("Title", key=TITLE_FIELD_KEY, help="Used as the filename when exporting to XML.")
 
         for section in record.sections:
-            with st.expander(f"{section.name}", expanded=section.name in {"Administrative", "Technical"}):
+            with st.expander(
+                f"{section.name}",
+                expanded=section.name in {"Administrative", "Technical Original", "Technical Master"},
+            ):
+                text_area_fields: list[str] = []
+                short_fields: list[str] = []
                 for field_name in section.fields:
                     if section.name == "Administrative" and field_name == "Title":
                         continue
-                    key = field_key(section.name, field_name)
-                    label = f"{field_name}"
-                    if is_date_field(field_name):
-                        no_date_key = f"{key}__no_date"
-                        date_key = f"{key}__date_picker"
-                        current_value = st.session_state.get(key, "").strip()
-                        if no_date_key not in st.session_state:
-                            st.session_state[no_date_key] = current_value == ""
-                        no_date = st.checkbox(f"No {label}", key=no_date_key)
-                        if no_date:
-                            st.session_state[key] = ""
-                            st.session_state.pop(date_key, None)
-                            st.caption("No date stored for this field.")
-                        else:
-                            default_date = parse_iso_date(current_value) or datetime.date.today()
-                            if date_key not in st.session_state:
-                                st.session_state[date_key] = default_date
-                            selected_date = st.date_input(label, key=date_key)
-                            if isinstance(selected_date, datetime.date):
-                                st.session_state[key] = selected_date.isoformat()
-                    elif field_name in LONG_TEXT_FIELDS:
-                        st.text_area(label, key=key, height=120)
+                    if field_name in LONG_TEXT_FIELDS:
+                        text_area_fields.append(field_name)
                     else:
-                        st.text_input(label, key=key)
+                        short_fields.append(field_name)
+
+                for field_name in text_area_fields:
+                    render_field_input(section.name, field_name, record.media_type, st)
+
+                for left, right in zip_longest(short_fields[::2], short_fields[1::2], fillvalue=None):
+                    cols = st.columns(2)
+                    if left:
+                        render_field_input(section.name, left, record.media_type, cols[0])
+                    if right:
+                        render_field_input(section.name, right, record.media_type, cols[1])
 
         form_save_col, form_clear_col = st.columns(2)
         save_clicked = form_save_col.form_submit_button("Save Metadata", type="primary")
@@ -559,7 +686,7 @@ def render_search_screen(search_service: SearchService, xml_service: XmlService)
     )
     st.session_state["filter_count"] = filter_count
 
-    field_options = [(section.name, field) for section in DEFAULT_SECTIONS for field in section.fields]
+    field_options = sorted(get_all_section_field_pairs())
 
     filters: List[FilterCriteria] = []
     for idx in range(int(filter_count)):
@@ -594,6 +721,7 @@ def render_search_screen(search_service: SearchService, xml_service: XmlService)
         execute_search(search_service, folder, filters, match_all, text_query)
     if col2.button("Clear Search", use_container_width=True):
         st.session_state["search_results"] = []
+        st.session_state["search_text_query"] = ""
         st.success("Search cleared.")
     if col3.button("Back to Home", use_container_width=True):
         st.session_state["current_screen"] = "home"
