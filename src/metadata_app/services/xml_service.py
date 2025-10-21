@@ -77,8 +77,25 @@ class XmlService:
         return record
 
     def find_metadata_for_media(self, media_path: Path) -> tuple[Path, MetadataRecord] | None:
-        """Return the XML path and record for a given media file, if it exists."""
+        """Return the XML path and record for a given media file, if it exists.
+
+        Matching strategy:
+        1) Exact absolute path match
+        2) Fallback: match by filename (case-insensitive) when paths differ
+        """
         target = Path(media_path).expanduser().resolve()
+        target_name = target.name.lower()
+        def _normalize_stem(p: Path) -> str:
+            s = p.stem.lower()
+            # strip a trailing _<number> if present (e.g., name_1.mp4)
+            import re as _re
+            return _re.sub(r"_\d+$", "", s)
+        target_stem = _normalize_stem(target)
+        target_ext = target.suffix.lower()
+
+        first_pass: list[tuple[Path, MetadataRecord]] = []
+        second_pass: list[tuple[Path, MetadataRecord]] = []
+
         for xml_file in sorted(self._repository.base_dir.glob("*.xml")):
             try:
                 record = self.load_record(xml_file)
@@ -90,8 +107,20 @@ class XmlService:
                 record_media_path = Path(record.media_path).expanduser().resolve()
             except Exception:
                 record_media_path = Path(record.media_path)
+
             if record_media_path == target:
-                return xml_file, record
+                first_pass.append((xml_file, record))
+            else:
+                if record_media_path.name.lower() == target_name:
+                    second_pass.append((xml_file, record))
+                else:
+                    if _normalize_stem(record_media_path) == target_stem and record_media_path.suffix.lower() == target_ext:
+                        second_pass.append((xml_file, record))
+
+        if first_pass:
+            return first_pass[0]
+        if second_pass:
+            return second_pass[0]
         return None
 
     def _resolve_path(self, record: MetadataRecord, path_hint: str | Path | None) -> Path:
