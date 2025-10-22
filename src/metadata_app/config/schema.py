@@ -47,7 +47,6 @@ VIDEO_AUDIO_SECTIONS: List[SectionDefinition] = _make_sections(
             "Administrative",
             [
                 "Title",
-                "Identifier",
                 "CollectionName",
                 "AcquisitionMethod",
                 "DonorSourceContact",
@@ -171,7 +170,6 @@ IMAGE_SECTIONS: List[SectionDefinition] = _make_sections(
             "Administrative",
             [
                 "Title",
-                "Identifier",
                 "CollectionName",
                 "AcquisitionMethod",
                 "DonorSourceContact",

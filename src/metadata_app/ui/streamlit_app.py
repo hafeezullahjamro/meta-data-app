@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
+import json
+import subprocess
 import tempfile
 import re
+from fractions import Fraction
 from itertools import zip_longest
 import os
+import shutil
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Any, Iterable, List, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -26,7 +31,6 @@ MEDIA_EXTENSIONS = {
 
 HINTS = {
     ("Administrative", "Title"): "Primary title for this record (used for filenames)",
-    ("Administrative", "Identifier"): "Collection identifier or catalog number",
     ("Administrative", "CollectionName"): "Collection/Series (e.g., 'National Archive ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ Aviation')",
     ("Administrative", "AcquisitionMethod"): "Donation / Purchase / Transfer / In-house",
     ("Administrative", "DonorSourceContact"): "Donor or source contact details",
@@ -78,7 +82,7 @@ HINTS = {
     ("Technical Master", "DataRate"): "e.g., 120 Mbps",
     ("Technical Master", "Duration"): "HH:MM:SS.mmm",
     ("Technical Master", "FileSizeGB"): "e.g., 45.2",
-    ("Technical Master", "Checksums"): "Click 'Generate MD5'",
+    ("Technical Master", "Checksums"): "Use the button to generate a checksum automatically.",
     ("Technical Master", "EmbeddedMetadataSchema"): "e.g., PBCoreXML",
     ("Access Copy", "Container"): "e.g., MP4",
     ("Access Copy", "BitDepth"): "e.g., 8-bit",
@@ -325,6 +329,24 @@ def render_field_input(section_name: str, field_name: str, media_type: str, cont
         container.text_area(label, key=key, height=120, placeholder=hint or "", help=hint)
         return
 
+    if field_name in CHECKSUM_FIELDS:
+        text_col, action_col = container.columns([3, 1])
+        text_col.text_input(label, key=key, placeholder=hint or "", help=hint)
+        button_label = f"Generate {field_name}" if field_name else "Generate"
+        if action_col.form_submit_button(button_label):
+            media_path_str = st.session_state.get(MEDIA_PATH_KEY) or st.session_state.get(MEDIA_PATH_INPUT_KEY, "")
+            if not media_path_str:
+                push_flash("Select or load a media file before generating a checksum.", "warning")
+            else:
+                media_path = Path(media_path_str)
+                checksum = calculate_checksum(media_path)
+                if checksum:
+                    st.session_state[key] = checksum
+                    push_flash("Checksum generated from current media file.", "success")
+                else:
+                    push_flash("Unable to generate checksum for the selected media file.", "warning")
+        return
+
     options = get_select_options(section_name, field_name, media_type)
     if options:
         option_list = [""] + options
@@ -357,6 +379,104 @@ FLASH_MESSAGE_KEY = "flash_message"
 FORM_SEED_TOKEN_KEY = "form_seed_token"
 FORM_RENDER_TOKEN_KEY = "form_render_token"
 SAVE_AS_NEW_KEY_PREFIX = "save_as_new"
+
+CHECKSUM_FIELDS = {"Checksum", "Checksums"}
+
+
+def calculate_checksum(file_path: Path, algorithm: str = "md5") -> str | None:
+    """Return the hexadecimal checksum for a file or None if unavailable."""
+    if not file_path.exists() or not file_path.is_file():
+        return None
+    try:
+        hasher = hashlib.new(algorithm)
+    except ValueError:
+        hasher = hashlib.md5()
+
+    try:
+        with file_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                hasher.update(chunk)
+    except Exception:
+        return None
+    return hasher.hexdigest()
+
+
+def set_field_if_empty(record: MetadataRecord, section: str, field: str, value: Any) -> None:
+    """Set a field only if it currently has no value."""
+    if value is None:
+        return
+    section_obj = record.get_section(section)
+    if section_obj is None:
+        return
+    current_value = section_obj.get_field(field)
+    if isinstance(current_value, str) and current_value.strip():
+        return
+    if current_value and not isinstance(current_value, str):
+        return
+    section_obj.set_field(field, str(value))
+
+
+def format_duration(seconds: float | None) -> str | None:
+    if seconds is None:
+        return None
+    try:
+        total_seconds = int(round(float(seconds)))
+    except (TypeError, ValueError):
+        return None
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02}:{minutes:02}:{secs:02}"
+
+
+def format_bit_rate(bit_rate: Any) -> str | None:
+    try:
+        value = float(bit_rate)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return f"{value / 1_000_000:.2f} Mbps"
+
+
+def parse_frame_rate(value: str | None) -> str | None:
+    if not value or value in {"0", "0/0"}:
+        return None
+    try:
+        fps = float(Fraction(value))
+    except (ValueError, ZeroDivisionError):
+        try:
+            fps = float(value)
+        except (TypeError, ValueError):
+            return None
+    if fps <= 0:
+        return None
+    text = f"{fps:.2f}"
+    return text.rstrip("0").rstrip(".")
+
+
+def probe_media_metadata(media_path: Path) -> dict[str, Any]:
+    """Return ffprobe-style metadata when available."""
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return {}
+    cmd = [
+        ffprobe,
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+        str(media_path),
+    ]
+    try:
+        completed = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except Exception:
+        return {}
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return {}
 
 
 def field_key(section_name: str, field_name: str) -> str:
@@ -494,53 +614,129 @@ def enrich_record_from_file(record: MetadataRecord, media_path: Path) -> None:
     - Technical Master.FileFormat from extension
     - Technical Master.FileSizeGB from file size
     - Image-only: Technical Master.WidthHeight and ColorSpace when Pillow is available
+    - Video/Audio: resolution, duration, sample rate, data rate (when ffprobe is available)
     """
     try:
         stat = media_path.stat()
     except Exception:
         stat = None
 
-    def set_field(section: str, field: str, value: str) -> None:
-        sec = record.get_section(section)
-        if sec is None:
-            return
-        sec.set_field(field, value)
-
     # Identifier hint
-    set_field("Descriptive", "Identifier", media_path.stem)
+    set_field_if_empty(record, "Descriptive", "Identifier", media_path.stem)
 
     # File format from extension
     ext = media_path.suffix.lstrip(".")
     if ext:
-        set_field("Technical Master", "FileFormat", ext.upper())
+        set_field_if_empty(record, "Technical Master", "FileFormat", ext.upper())
 
-    # File size in GB
+    # File size in GB (also mirror to access copy when empty)
     if stat is not None:
         size_gb = stat.st_size / (1024 ** 3)
-        set_field("Technical Master", "FileSizeGB", f"{size_gb:.3f}")
+        size_text = f"{size_gb:.3f}"
+        set_field_if_empty(record, "Technical Master", "FileSizeGB", size_text)
+        set_field_if_empty(record, "Access Copy", "FileSizeGB", size_text)
+        set_field_if_empty(record, "Technical Access Copy", "FileSizeGB", size_text)
         # Creation/modification date as YYYY-MM-DD
         try:
             mtime = datetime.date.fromtimestamp(stat.st_mtime)
-            set_field("Administrative", "DateOfCreation", mtime.isoformat())
+            set_field_if_empty(record, "Administrative", "DateOfCreation", mtime.isoformat())
         except Exception:
             pass
 
+    media_type = (record.media_type or "").lower()
+
     # Image metadata via Pillow, if available
-    if record.media_type.lower() == "image":
+    if media_type == "image":
         try:
             from PIL import Image
 
             with Image.open(media_path) as im:
                 w, h = im.size
-                set_field("Technical Master", "WidthHeight", f"{w}x{h}")
+                resolution = f"{w}x{h}" if w and h else None
+                if resolution:
+                    set_field_if_empty(record, "Technical Master", "WidthHeight", resolution)
+                    set_field_if_empty(record, "Technical Master", "Resolution", resolution)
                 if im.mode:
-                    set_field("Technical Master", "ColorSpace", im.mode)
+                    set_field_if_empty(record, "Technical Master", "ColorSpace", im.mode)
                 dpi = im.info.get("dpi")
-                if isinstance(dpi, tuple) and len(dpi) >= 1:
-                    set_field("Technical Master", "DPI", str(dpi[0]))
+                if isinstance(dpi, tuple) and dpi:
+                    set_field_if_empty(record, "Technical Master", "DPI", int(dpi[0]))
         except Exception:
             # Pillow not installed or image unreadable; skip silently
             pass
+        return
+
+    # Video/Audio metadata via ffprobe when available
+    probe = probe_media_metadata(media_path)
+    if not probe:
+        return
+
+    format_info = probe.get("format", {}) or {}
+    streams = probe.get("streams", []) or []
+
+    bit_rate = format_info.get("bit_rate")
+    duration = format_info.get("duration")
+    if duration:
+        duration_text = format_duration(duration)
+        if duration_text:
+            set_field_if_empty(record, "Technical Master", "Duration", duration_text)
+
+    if bit_rate:
+        data_rate = format_bit_rate(bit_rate)
+        if data_rate:
+            set_field_if_empty(record, "Technical Master", "DataRate", data_rate)
+
+    video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
+    audio_stream = next((stream for stream in streams if stream.get("codec_type") == "audio"), None)
+
+    if video_stream:
+        width = video_stream.get("width")
+        height = video_stream.get("height")
+        if width and height:
+            resolution = f"{width}x{height}"
+            set_field_if_empty(record, "Technical Master", "Resolution", resolution)
+            set_field_if_empty(record, "Technical Master", "WidthHeight", resolution)
+            try:
+                ratio = Fraction(int(width), int(height)).limit_denominator()
+                set_field_if_empty(record, "Technical Master", "AspectRatio", f"{ratio.numerator}:{ratio.denominator}")
+            except Exception:
+                pass
+        frame_rate_text = parse_frame_rate(
+            video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate")
+        )
+        if frame_rate_text:
+            set_field_if_empty(record, "Technical Master", "FrameRate", frame_rate_text)
+        if not bit_rate:
+            video_bit_rate = video_stream.get("bit_rate")
+            data_rate = format_bit_rate(video_bit_rate)
+            if data_rate:
+                set_field_if_empty(record, "Technical Master", "DataRate", data_rate)
+
+    if audio_stream:
+        sample_rate = audio_stream.get("sample_rate")
+        if sample_rate:
+            try:
+                sample_rate_khz = float(sample_rate) / 1000
+                sample_text = f"{sample_rate_khz:.1f}".rstrip("0").rstrip(".")
+                set_field_if_empty(record, "Technical Master", "AudioSampleRateKHz", sample_text)
+            except (TypeError, ValueError):
+                pass
+        bits_per_sample = audio_stream.get("bits_per_sample")
+        if bits_per_sample:
+            set_field_if_empty(record, "Technical Master", "AudioBitDepth", bits_per_sample)
+        channels = audio_stream.get("channels")
+        if channels:
+            set_field_if_empty(record, "Technical Master", "AudioChannelsCount", channels)
+        audio_bit_rate = audio_stream.get("bit_rate")
+        if audio_bit_rate:
+            data_rate = format_bit_rate(audio_bit_rate)
+            if data_rate:
+                set_field_if_empty(record, "Technical Master", "DataRate", data_rate)
+        if not duration:
+            audio_duration = audio_stream.get("duration")
+            duration_text = format_duration(audio_duration) if audio_duration else None
+            if duration_text:
+                set_field_if_empty(record, "Technical Master", "Duration", duration_text)
 
 
 def save_uploaded_media_file(uploaded_file, media_type: str) -> Path:
@@ -571,6 +767,7 @@ def handle_media_path_entry(path_str: str, xml_service: XmlService) -> None:
         return
     path = Path(path_str).expanduser()
     st.session_state[MEDIA_UPLOAD_TOKEN_KEY] = None
+    st.session_state.pop("media_uploader", None)
     # Load without forcing an extra rerun; we refresh values in the same run
     load_media_from_disk(path, xml_service, request_rerun=False)
 
@@ -671,6 +868,8 @@ def load_record_into_session(
     media_path_value = (record.media_path or "").strip()
     st.session_state[MEDIA_PATH_KEY] = media_path_value
     st.session_state[MEDIA_PATH_INPUT_PENDING_KEY] = media_path_value
+    st.session_state[MEDIA_UPLOAD_TOKEN_KEY] = None
+    st.session_state.pop("media_uploader", None)
 
     st.session_state[FORM_SEED_TOKEN_KEY] += 1
 
