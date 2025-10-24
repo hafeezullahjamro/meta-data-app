@@ -317,30 +317,26 @@ def render_field_input(section_name: str, field_name: str, media_type: str, cont
 
     if is_date_field(field_name):
         date_key = f"{key}__date_picker"
-        selected_flag_key = f"{key}{DATE_SELECTED_SUFFIX}"
-        # Seed session state on first render
-        if date_key not in st.session_state:
-            parsed = parse_iso_date(current_value)
-            st.session_state[date_key] = parsed or datetime.date.today()
-            st.session_state[selected_flag_key] = parsed is not None
-            if parsed:
-                st.session_state[key] = parsed.isoformat()
-        date_widget = container.date_input(
+        parsed_value = parse_iso_date(current_value)
+        selected_date = container.date_input(
             label,
+            value=parsed_value or datetime.date.today(),
             key=date_key,
             help=hint,
-            on_change=_on_date_change,
+        )
+
+        if isinstance(selected_date, datetime.date):
+            st.session_state[key] = selected_date.isoformat()
+        else:
+            st.session_state[key] = ""
+
+        container.form_submit_button(
+            f"Clear {field_name}",
+            on_click=clear_date_field,
             args=(key,),
         )
-        if st.session_state.get(selected_flag_key, False):
-            st.session_state[key] = date_widget.isoformat()
-        current_value = st.session_state.get(key, "")
-        if not current_value:
+        if not st.session_state.get(key):
             container.caption("No date selected.")
-        if container.button("Clear date", key=f"{key}__clear_date"):
-            st.session_state[key] = ""
-            st.session_state[date_key] = datetime.date.today()
-            st.session_state[selected_flag_key] = False
         return
 
     if field_name in LONG_TEXT_FIELDS:
@@ -349,7 +345,6 @@ def render_field_input(section_name: str, field_name: str, media_type: str, cont
 
     if field_name in CHECKSUM_FIELDS:
         text_col, action_col = container.columns([3, 1])
-        text_col.text_input(label, key=key, placeholder=hint or "", help=hint)
         button_label = f"Generate {field_name}" if field_name else "Generate"
         if action_col.form_submit_button(button_label):
             media_path_str = st.session_state.get(MEDIA_PATH_KEY) or st.session_state.get(MEDIA_PATH_INPUT_KEY, "")
@@ -363,11 +358,14 @@ def render_field_input(section_name: str, field_name: str, media_type: str, cont
                     push_flash("Checksum generated from current media file.", "success")
                 else:
                     push_flash("Unable to generate checksum for the selected media file.", "warning")
+        text_col.text_input(label, key=key, placeholder=hint or "", help=hint)
         return
 
     options = get_select_options(section_name, field_name, media_type)
     if options:
         option_list = [""] + options
+        if current_value and current_value not in option_list:
+            option_list.insert(1, current_value)
         index = option_list.index(current_value) if current_value in option_list else 0
         container.selectbox(label, option_list, index=index, key=key, help=hint)
         return
@@ -399,16 +397,6 @@ FORM_RENDER_TOKEN_KEY = "form_render_token"
 SAVE_AS_NEW_KEY_PREFIX = "save_as_new"
 
 CHECKSUM_FIELDS = {"Checksum", "Checksums"}
-DATE_SELECTED_SUFFIX = "__date_selected"
-
-
-def _on_date_change(base_key: str) -> None:
-    """Ensure base field mirrors the latest date picker value."""
-    date_key = f"{base_key}__date_picker"
-    selected = st.session_state.get(date_key)
-    if isinstance(selected, datetime.date):
-        st.session_state[base_key] = selected.isoformat()
-        st.session_state[f"{base_key}{DATE_SELECTED_SUFFIX}"] = True
 
 
 def calculate_checksum(file_path: Path, algorithm: str = "md5") -> str | None:
@@ -505,6 +493,12 @@ def probe_media_metadata(media_path: Path) -> dict[str, Any]:
         return json.loads(completed.stdout)
     except json.JSONDecodeError:
         return {}
+
+
+def clear_date_field(base_key: str) -> None:
+    """Reset stored date values for a given key."""
+    st.session_state.pop(base_key, None)
+    st.session_state.pop(f"{base_key}__date_picker", None)
 
 
 def field_key(section_name: str, field_name: str) -> str:
