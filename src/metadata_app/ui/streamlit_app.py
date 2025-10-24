@@ -316,23 +316,31 @@ def render_field_input(section_name: str, field_name: str, media_type: str, cont
     hint = HINTS.get((section_name, field_name))
 
     if is_date_field(field_name):
-        no_date_key = f"{key}__no_date"
         date_key = f"{key}__date_picker"
-        if no_date_key not in st.session_state:
-            st.session_state[no_date_key] = current_value.strip() == ""
-        no_date = container.checkbox(f"No {label}", key=no_date_key)
-        if no_date:
+        selected_flag_key = f"{key}{DATE_SELECTED_SUFFIX}"
+        # Seed session state on first render
+        if date_key not in st.session_state:
+            parsed = parse_iso_date(current_value)
+            st.session_state[date_key] = parsed or datetime.date.today()
+            st.session_state[selected_flag_key] = parsed is not None
+            if parsed:
+                st.session_state[key] = parsed.isoformat()
+        date_widget = container.date_input(
+            label,
+            key=date_key,
+            help=hint,
+            on_change=_on_date_change,
+            args=(key,),
+        )
+        if st.session_state.get(selected_flag_key, False):
+            st.session_state[key] = date_widget.isoformat()
+        current_value = st.session_state.get(key, "")
+        if not current_value:
+            container.caption("No date selected.")
+        if container.button("Clear date", key=f"{key}__clear_date"):
             st.session_state[key] = ""
-            st.session_state.pop(date_key, None)
-            if hint:
-                container.caption(hint)
-        else:
-            default_date = parse_iso_date(current_value) or datetime.date.today()
-            if date_key not in st.session_state:
-                st.session_state[date_key] = default_date
-            selected_date = container.date_input(label, key=date_key, help=hint)
-            if isinstance(selected_date, datetime.date):
-                st.session_state[key] = selected_date.isoformat()
+            st.session_state[date_key] = datetime.date.today()
+            st.session_state[selected_flag_key] = False
         return
 
     if field_name in LONG_TEXT_FIELDS:
@@ -391,6 +399,16 @@ FORM_RENDER_TOKEN_KEY = "form_render_token"
 SAVE_AS_NEW_KEY_PREFIX = "save_as_new"
 
 CHECKSUM_FIELDS = {"Checksum", "Checksums"}
+DATE_SELECTED_SUFFIX = "__date_selected"
+
+
+def _on_date_change(base_key: str) -> None:
+    """Ensure base field mirrors the latest date picker value."""
+    date_key = f"{base_key}__date_picker"
+    selected = st.session_state.get(date_key)
+    if isinstance(selected, datetime.date):
+        st.session_state[base_key] = selected.isoformat()
+        st.session_state[f"{base_key}{DATE_SELECTED_SUFFIX}"] = True
 
 
 def calculate_checksum(file_path: Path, algorithm: str = "md5") -> str | None:
